@@ -51,13 +51,11 @@ def download_audio(url: str, output_path: str):
 def ask(data: AskRequest):
 
     temp_dir = tempfile.mkdtemp()
-    audio_path = os.path.join(temp_dir, "audio.%(ext)s")
+    audio_template = os.path.join(temp_dir, "audio.%(ext)s")
 
     try:
-        # 1️⃣ Download full audio
-        download_audio(data.video_url, audio_path)
+        download_audio(data.video_url, audio_template)
 
-        # Find actual downloaded file
         actual_file = None
         for file in os.listdir(temp_dir):
             if file.endswith((".mp3", ".m4a", ".webm")):
@@ -65,23 +63,16 @@ def ask(data: AskRequest):
                 break
 
         if not actual_file:
-            return {
-                "timestamp": "00:00:00",
-                "video_url": data.video_url,
-                "topic": data.topic
-            }
+            raise Exception("Audio download failed")
 
-        # 2️⃣ Upload to Gemini Files API
         uploaded_file = client.files.upload(file=actual_file)
 
-        # 3️⃣ Wait until ACTIVE
         while uploaded_file.state.name != "ACTIVE":
             time.sleep(2)
             uploaded_file = client.files.get(name=uploaded_file.name)
 
-        # 4️⃣ Ask Gemini for exact first mention timestamp
         prompt = f"""
-        Find the FIRST time the following topic is spoken in the audio.
+        Find the FIRST exact time the topic is spoken.
 
         Topic: {data.topic}
 
@@ -99,17 +90,20 @@ def ask(data: AskRequest):
 
         timestamp = response.parsed.timestamp
 
+        if not timestamp:
+            raise Exception("Gemini returned empty timestamp")
+
         return {
             "timestamp": timestamp,
             "video_url": data.video_url,
             "topic": data.topic
         }
 
-    except Exception:
+    except Exception as e:
+        # TEMPORARY DEBUG RESPONSE
         return {
-            "timestamp": "00:00:00",
-            "video_url": data.video_url,
-            "topic": data.topic
+            "timestamp": "00:00:01",
+            "error": str(e)
         }
 
     finally:
