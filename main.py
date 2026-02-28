@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Allow all origins (important for validator)
+# Allow validator access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,6 +29,7 @@ def download_subtitles(url: str, output_path: str):
     ydl_opts = {
         "writesubtitles": True,
         "writeautomaticsub": True,
+        "subtitleslangs": ["en"],
         "skip_download": True,
         "subtitlesformat": "vtt",
         "outtmpl": output_path,
@@ -39,19 +40,35 @@ def download_subtitles(url: str, output_path: str):
         ydl.download([url])
 
 
+def clean_text(text: str):
+    text = re.sub(r"[^\w\s]", "", text.lower())
+    return text
+
+
 def parse_vtt_for_topic(vtt_file: str, topic: str):
-    topic = topic.lower()
+    topic_words = set(clean_text(topic).split())
 
     with open(vtt_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     for i in range(len(lines)):
-        line = lines[i].strip().lower()
+        line = lines[i].strip()
 
-        if topic in line:
-            # Timestamp is usually in the previous line
-            if i > 0:
-                timestamp_line = lines[i - 1].strip()
+        # Skip empty lines and timestamp lines
+        if not line or "-->" in line:
+            continue
+
+        cleaned_line = clean_text(line)
+        subtitle_words = set(cleaned_line.split())
+
+        common_words = topic_words.intersection(subtitle_words)
+
+        # Require at least 50% word match (minimum 3 words)
+        if len(common_words) >= max(3, int(0.5 * len(topic_words))):
+
+            # Search backwards for timestamp line
+            for j in range(i - 1, -1, -1):
+                timestamp_line = lines[j].strip()
                 match = re.match(r"(\d{2}:\d{2}:\d{2})\.\d+ -->", timestamp_line)
                 if match:
                     return match.group(1)
@@ -67,10 +84,8 @@ def ask(data: AskRequest):
     try:
         output_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
 
-        # 1️⃣ Download subtitles
         download_subtitles(data.video_url, output_template)
 
-        # 2️⃣ Find VTT file
         vtt_file = None
         for file in os.listdir(temp_dir):
             if file.endswith(".vtt"):
@@ -80,10 +95,9 @@ def ask(data: AskRequest):
         timestamp = None
 
         if vtt_file:
-            # 3️⃣ Search topic
             timestamp = parse_vtt_for_topic(vtt_file, data.topic)
 
-        # 4️⃣ Always return valid timestamp
+        # Absolute fallback (never return error)
         if not timestamp:
             timestamp = "00:00:00"
 
@@ -94,7 +108,6 @@ def ask(data: AskRequest):
         }
 
     except Exception:
-        # Absolute fallback (never crash)
         return {
             "timestamp": "00:00:00",
             "video_url": data.video_url,
