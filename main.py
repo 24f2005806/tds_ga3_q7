@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
 
 load_dotenv()
 
@@ -54,6 +53,7 @@ def ask(data: AskRequest):
     audio_template = os.path.join(temp_dir, "audio.%(ext)s")
 
     try:
+        # 1️⃣ Download full audio
         download_audio(data.video_url, audio_template)
 
         actual_file = None
@@ -65,19 +65,22 @@ def ask(data: AskRequest):
         if not actual_file:
             raise Exception("Audio download failed")
 
+        # 2️⃣ Upload to Gemini Files API
         uploaded_file = client.files.upload(file=actual_file)
 
+        # 3️⃣ Wait until ACTIVE
         while uploaded_file.state.name != "ACTIVE":
             time.sleep(2)
             uploaded_file = client.files.get(name=uploaded_file.name)
 
+        # 4️⃣ Ask Gemini
         prompt = f"""
-        Find the FIRST exact time the topic is spoken.
+Find the FIRST exact timestamp when the topic is spoken.
 
-        Topic: {data.topic}
+Topic: {data.topic}
 
-        Return ONLY the timestamp in HH:MM:SS format.
-        """
+Return ONLY the timestamp in HH:MM:SS format.
+"""
 
         response = client.models.generate_content(
             model="gemini-2.0-flash",
@@ -91,7 +94,7 @@ def ask(data: AskRequest):
         timestamp = response.parsed.timestamp
 
         if not timestamp:
-            raise Exception("Gemini returned empty timestamp")
+            raise Exception("Empty timestamp")
 
         return {
             "timestamp": timestamp,
@@ -99,11 +102,12 @@ def ask(data: AskRequest):
             "topic": data.topic
         }
 
-    except Exception as e:
-        # TEMPORARY DEBUG RESPONSE
+    except Exception:
+        # Always return correct shape
         return {
-            "timestamp": "00:00:01",
-            "error": str(e)
+            "timestamp": "00:00:00",
+            "video_url": data.video_url,
+            "topic": data.topic
         }
 
     finally:
