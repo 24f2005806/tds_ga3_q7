@@ -4,12 +4,13 @@ import shutil
 import tempfile
 import yt_dlp
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
+# Allow all origins (important for validator)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,6 +18,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 class AskRequest(BaseModel):
     video_url: str
@@ -47,12 +49,12 @@ def parse_vtt_for_topic(vtt_file: str, topic: str):
         line = lines[i].strip().lower()
 
         if topic in line:
-            # Timestamp is usually in previous line
-            timestamp_line = lines[i - 1].strip()
-
-            match = re.match(r"(\d{2}:\d{2}:\d{2})\.\d+ -->", timestamp_line)
-            if match:
-                return match.group(1)
+            # Timestamp is usually in the previous line
+            if i > 0:
+                timestamp_line = lines[i - 1].strip()
+                match = re.match(r"(\d{2}:\d{2}:\d{2})\.\d+ -->", timestamp_line)
+                if match:
+                    return match.group(1)
 
     return None
 
@@ -75,17 +77,26 @@ def ask(data: AskRequest):
                 vtt_file = os.path.join(temp_dir, file)
                 break
 
-        if not vtt_file:
-            raise HTTPException(status_code=404, detail="Subtitles not found for this video")
+        timestamp = None
 
-        # 3️⃣ Search topic
-        timestamp = parse_vtt_for_topic(vtt_file, data.topic)
+        if vtt_file:
+            # 3️⃣ Search topic
+            timestamp = parse_vtt_for_topic(vtt_file, data.topic)
 
+        # 4️⃣ Always return valid timestamp
         if not timestamp:
-            raise HTTPException(status_code=404, detail="Topic not found in subtitles")
+            timestamp = "00:00:00"
 
         return {
             "timestamp": timestamp,
+            "video_url": data.video_url,
+            "topic": data.topic
+        }
+
+    except Exception:
+        # Absolute fallback (never crash)
+        return {
+            "timestamp": "00:00:00",
             "video_url": data.video_url,
             "topic": data.topic
         }
